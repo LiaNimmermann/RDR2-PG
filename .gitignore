@@ -1,3 +1,5 @@
 Subset-Creation/all_captures.json
 .vscode/settings.json
 Weather_annotation/outputs
+Weather_annotation/outputs_new
+__pycache__
