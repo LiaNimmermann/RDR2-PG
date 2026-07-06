@@ -33,6 +33,7 @@ import evaluate
 import numpy as np
 import torch
 from datasets import load_dataset
+import torch.nn.functional as F
 from PIL import Image
 from torchvision.transforms import (
     CenterCrop,
@@ -44,6 +45,7 @@ from torchvision.transforms import (
     Resize,
     ToTensor,
 )
+from torchvision.datasets import DatasetFolder
 
 import transformers
 from transformers import (
@@ -60,6 +62,7 @@ from transformers import (
 from transformers.utils import check_min_version
 from transformers.utils.versions import require_version
 
+from depth_dataset import load_dataset, read_exr
 
 """ Fine-tuning a 🤗 Transformers model for image classification"""
 
@@ -242,12 +245,19 @@ def main():
         if data_args.validation_dir is not None:
             data_files["validation"] = os.path.join(data_args.validation_dir, "**")
         dataset = load_dataset(
-            "imagefolder",
-            data_files=data_files,
-            cache_dir=model_args.cache_dir,
+            data_args.train_dir,
+            data_args.validation_dir if hasattr(data_args, "validation_dir") else None
         )
+        #dataset = load_dataset(
+        #    "imagefolder",
+        #    data_files=data_files,
+        #    cache_dir=model_args.cache_dir,
+        #)
 
-    dataset_column_names = dataset["train"].column_names if "train" in dataset else dataset["validation"].column_names
+    #dataset_column_names = dataset["train"].column_names if "train" in dataset else dataset["validation"].column_names
+    dataset_column_names = ["image", "label"]
+    data_args.image_column_name = "image"
+    data_args.label_column_name = "label"
     if data_args.image_column_name not in dataset_column_names:
         raise ValueError(
             f"--image_column_name {data_args.image_column_name} not found in dataset '{data_args.dataset_name}'. "
@@ -260,11 +270,21 @@ def main():
             "Make sure to set `--label_column_name` to the correct text column - one of "
             f"{', '.join(dataset_column_names)}."
         )
+    import torch
 
-    def collate_fn(examples):
-        pixel_values = torch.stack([example["pixel_values"] for example in examples])
-        labels = torch.tensor([example[data_args.label_column_name] for example in examples])
-        return {"pixel_values": pixel_values, "labels": labels}
+    def collate_fn(batch):
+        pixel_values = torch.stack([x["pixel_values"] for x in batch])
+        labels = torch.tensor([x["labels"] for x in batch])
+
+        return {
+            "pixel_values": pixel_values,
+            "labels": labels
+        }
+
+#    def collate_fn(examples):
+#        pixel_values = torch.stack([example["image"] for example in examples])
+#        labels = torch.tensor([example[data_args.label_column_name] for example in examples])
+#        return {"image": pixel_values, "labels": labels}
 
     # If we don't have a validation split, split off a percentage of train as validation.
     data_args.train_val_split = None if "validation" in dataset else data_args.train_val_split
@@ -353,16 +373,53 @@ def main():
             ]
         )
 
+
     def train_transforms(example_batch):
-        """Apply _train_transforms across a batch."""
-        example_batch["pixel_values"] = [
-            _train_transforms(pil_img.convert("RGB")) for pil_img in example_batch[data_args.image_column_name]
-        ]
-        return example_batch
+        images = example_batch["image"]
+
+        pixel_values = []
+
+        for path in images:
+            img = read_exr(path)  # (H, W)
+
+            img = img.astype(np.float32)
+
+            # normalize depth
+            img = (img - img.min()) / (img.max() - img.min() + 1e-6)
+
+            # (1, H, W)
+            img = np.expand_dims(img, axis=0)
+
+            # repeat to 3 channels for ViT
+            img = np.repeat(img, 3, axis=0)  # (3, H, W)
+
+            # convert to tensor
+            img = torch.from_numpy(img.copy()).float()
+
+            # 🔥 RESIZE TO 224x224 (ViT requirement)
+            img = F.interpolate(
+                img.unsqueeze(0),  # (1, 3, H, W)
+                size=(224, 224),
+                mode="bilinear",
+                align_corners=False
+            ).squeeze(0)  # (3, 224, 224)
+
+            pixel_values.append(img)
+
+        return {
+            "pixel_values": pixel_values,
+            "labels": example_batch["label"]
+        }
+    #def train_transforms(example_batch):
+    #    """Apply _train_transforms across a batch."""
+    #    example_batch["pixel_values"] = [
+    #        _train_transforms(pil_img.convert("RGB")) for pil_img in example_batch[data_args.image_column_name]
+    #    ]
+    #    return example_batch
 
     def val_transforms(example_batch):
         """Apply _val_transforms across a batch."""
-        example_batch["pixel_values"] = [
+        example_batch["image"] = [
             _val_transforms(pil_img.convert("RGB")) for pil_img in example_batch[data_args.image_column_name]
         ]
         return example_batch
@@ -385,7 +442,7 @@ def main():
                 dataset["validation"].shuffle(seed=training_args.seed).select(range(data_args.max_eval_samples))
             )
         # Set the validation transforms
-        dataset["validation"].set_transform(val_transforms)
+        dataset["validation"].set_transform(train_transforms)
 
     # Initialize our trainer
     trainer = Trainer(
