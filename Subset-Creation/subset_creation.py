@@ -101,11 +101,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Create an RDR2 dataset subset.")
     parser.add_argument("src_root", help="Source dataset root")
     parser.add_argument("dst_root", help="Destination root for subset")
-    parser.add_argument(
-        "subset_ids",
-        nargs="+",
-        type=int,
-        help="Subset capture IDs to include",
-    )
+    parser.add_argument("id_list_path", help="Path to list with ids for subset")
     args = parser.parse_args()
     create_subset(args.src_root, args.dst_root, args.subset_ids)
