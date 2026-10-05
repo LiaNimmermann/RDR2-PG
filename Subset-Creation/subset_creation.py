@@ -8,9 +8,12 @@ from typing import Iterable, Union
 from tqdm import tqdm
 
 
-def create_subset(src_root: str, dst_root: str, subset_ids: Iterable[Union[int, str]]) -> None:
+def create_subset(src_root: str, dst_root: str, subset_ids: str) -> None:
     """Create a dataset subset by copying selected files and filtering metadata."""
-    subset_ids = [str(ID) for ID in subset_ids]
+
+    subset_ids = []
+    with open(subset_ids, "r", encoding="utf-8") as f:
+        subset_ids = [line.strip() for line in f if line.strip()]
 
     folders = [
         "Bbox",
